@@ -50,14 +50,24 @@ async function getTerminalColors(): Promise<{ fg: RGB; bg: RGB }> {
 
 const { fg: termFg, bg: termBg } = await getTerminalColors();
 
-const pdfPath = process.argv[2] ?? "ddia2.pdf";
+// Parse args: [file] [--page N]
+let pdfPath = "ddia2.pdf";
+let startPage = 0;
+for (let i = 2; i < process.argv.length; i++) {
+  if ((process.argv[i] === "--page" || process.argv[i] === "-p") && process.argv[i + 1]) {
+    startPage = Math.max(0, parseInt(process.argv[++i], 10) - 1);
+  } else {
+    pdfPath = process.argv[i];
+  }
+}
+
 const pdfBytes = await Bun.file(pdfPath).arrayBuffer();
 
 const library = await PDFiumLibrary.init();
 const document = await library.loadDocument(new Uint8Array(pdfBytes));
 const pageCount = document.getPageCount();
 
-let currentPage = 0;
+let currentPage = Math.min(startPage, pageCount - 1);
 
 // Map PDF colors to terminal colors:
 // PDF white (255) → terminal bg, PDF black (0) → terminal fg
@@ -76,7 +86,7 @@ function remapBGRAtoRGBA(bgra: Uint8Array): Uint8Array {
   return rgba;
 }
 
-function fitToTerminal(pageW: number, pageH: number): { cols: number; rows: number } {
+function fitToTerminal(pageW: number, pageH: number): { cols: number; rows: number; padLeft: number } {
   const termCols = process.stdout.columns ?? 80;
   const termRows = (process.stdout.rows ?? 24) - 1; // leave 1 row for status
 
@@ -90,7 +100,8 @@ function fitToTerminal(pageW: number, pageH: number): { cols: number; rows: numb
     cols = Math.round((pageW / pageH) * rows / CELL_ASPECT);
   }
 
-  return { cols, rows };
+  const padLeft = Math.max(0, Math.floor((termCols - cols) / 2));
+  return { cols, rows, padLeft };
 }
 
 function writeKittyImage(rgba: Uint8Array, width: number, height: number, cols: number, rows: number) {
@@ -119,11 +130,14 @@ async function renderPage(pageIndex: number) {
   const result = await page.render({ scale: 2, render: "bitmap" });
 
   const rgba = remapBGRAtoRGBA(result.data);
-  const { cols, rows } = fitToTerminal(result.width, result.height);
+  const { cols, rows, padLeft } = fitToTerminal(result.width, result.height);
 
   // Clear screen, delete old images, home cursor
   process.stdout.write("\x1b_Ga=d\x1b\\");    // delete all kitty images
   process.stdout.write("\x1b[2J\x1b[H");       // clear screen + cursor home
+
+  // Center horizontally
+  if (padLeft > 0) process.stdout.write(`\x1b[${padLeft}C`);
 
   writeKittyImage(rgba, result.width, result.height, cols, rows);
 
@@ -146,6 +160,17 @@ function cleanup() {
 process.on("exit", cleanup);
 process.on("SIGINT", () => process.exit());
 process.on("SIGTERM", () => process.exit());
+let resizeTimer: Timer | null = null;
+process.on("SIGWINCH", () => {
+  if (resizeTimer) clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(async () => {
+    if (!rendering) {
+      rendering = true;
+      await renderPage(currentPage);
+      rendering = false;
+    }
+  }, 150);
+});
 
 // stdin already in raw mode from color query
 let rendering = false;
