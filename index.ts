@@ -50,12 +50,26 @@ async function getTerminalColors(): Promise<{ fg: RGB; bg: RGB }> {
 
 const { fg: termFg, bg: termBg } = await getTerminalColors();
 
-// Parse args: [file] [--page N]
+// Parse args: [file] [--page N] [--margin-top N] [--margin-bottom N]
 let pdfPath = "ddia2.pdf";
 let startPage = 0;
+let marginTop = 0;
+let marginBottom = 0;
+let marginLeft = 0;
+let marginRight = 0;
 for (let i = 2; i < process.argv.length; i++) {
-  if ((process.argv[i] === "--page" || process.argv[i] === "-p") && process.argv[i + 1]) {
+  const arg = process.argv[i];
+  const next = process.argv[i + 1];
+  if ((arg === "--page" || arg === "-p") && next) {
     startPage = Math.max(0, parseInt(process.argv[++i], 10) - 1);
+  } else if (arg === "--margin-top" && next) {
+    marginTop = Math.max(0, parseInt(process.argv[++i], 10));
+  } else if (arg === "--margin-bottom" && next) {
+    marginBottom = Math.max(0, parseInt(process.argv[++i], 10));
+  } else if (arg === "--margin-left" && next) {
+    marginLeft = Math.max(0, parseInt(process.argv[++i], 10));
+  } else if (arg === "--margin-right" && next) {
+    marginRight = Math.max(0, parseInt(process.argv[++i], 10));
   } else {
     pdfPath = process.argv[i];
   }
@@ -125,12 +139,32 @@ function writeKittyImage(rgba: Uint8Array, width: number, height: number, cols: 
   }
 }
 
+function cropBitmap(data: Uint8Array, width: number, height: number, top: number, bottom: number, left: number, right: number) {
+  const cropTop = Math.min(top, height);
+  const cropBottom = Math.min(bottom, height - cropTop);
+  const newHeight = height - cropTop - cropBottom;
+  const cropLeft = Math.min(left, width);
+  const cropRight = Math.min(right, width - cropLeft);
+  const newWidth = width - cropLeft - cropRight;
+  if (newHeight <= 0 || newWidth <= 0) return { data, width, height };
+
+  const cropped = new Uint8Array(newWidth * newHeight * 4);
+  const srcRowBytes = width * 4;
+  const dstRowBytes = newWidth * 4;
+  for (let y = 0; y < newHeight; y++) {
+    const srcOffset = (cropTop + y) * srcRowBytes + cropLeft * 4;
+    cropped.set(data.subarray(srcOffset, srcOffset + dstRowBytes), y * dstRowBytes);
+  }
+  return { data: cropped, width: newWidth, height: newHeight };
+}
+
 async function renderPage(pageIndex: number) {
   const page = document.getPage(pageIndex);
   const result = await page.render({ scale: 2, render: "bitmap" });
 
-  const rgba = remapBGRAtoRGBA(result.data);
-  const { cols, rows, padLeft } = fitToTerminal(result.width, result.height);
+  const cropped = cropBitmap(result.data, result.width, result.height, marginTop, marginBottom, marginLeft, marginRight);
+  const rgba = remapBGRAtoRGBA(cropped.data);
+  const { cols, rows, padLeft } = fitToTerminal(cropped.width, cropped.height);
 
   // Clear screen, delete old images, home cursor
   process.stdout.write("\x1b_Ga=d\x1b\\");    // delete all kitty images
@@ -139,11 +173,13 @@ async function renderPage(pageIndex: number) {
   // Center horizontally
   if (padLeft > 0) process.stdout.write(`\x1b[${padLeft}C`);
 
-  writeKittyImage(rgba, result.width, result.height, cols, rows);
+  writeKittyImage(rgba, cropped.width, cropped.height, cols, rows);
 
-  // Status line at bottom
+  // Full-width status line at bottom
+  const termCols = process.stdout.columns ?? 80;
+  const status = ` Page ${pageIndex + 1}/${pageCount}  ←/→ navigate  q quit `;
   process.stdout.write(`\x1b[${(process.stdout.rows ?? 24)};1H`);
-  process.stdout.write(`\x1b[7m Page ${pageIndex + 1}/${pageCount}  ←/→ navigate  q quit \x1b[0m`);
+  process.stdout.write(`\x1b[7m${status.padEnd(termCols)}\x1b[0m`);
 }
 
 // Enter alternate screen, hide cursor
