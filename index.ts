@@ -1,4 +1,5 @@
 import { PDFiumLibrary } from "@hyzyla/pdfium";
+import { readFile } from "node:fs/promises";
 
 const CELL_ASPECT = 0.5; // terminal cell width/height ratio (~8px wide, ~16px tall)
 
@@ -57,10 +58,13 @@ let marginTop = 0;
 let marginBottom = 0;
 let marginLeft = 0;
 let marginRight = 0;
+let recolor = true;
 for (let i = 2; i < process.argv.length; i++) {
   const arg = process.argv[i];
   const next = process.argv[i + 1];
-  if ((arg === "--page" || arg === "-p") && next) {
+  if (arg === "--no-recolor") {
+    recolor = false;
+  } else if ((arg === "--page" || arg === "-p") && next) {
     startPage = Math.max(0, parseInt(process.argv[++i], 10) - 1);
   } else if (arg === "--margin-top" && next) {
     marginTop = Math.max(0, parseInt(process.argv[++i], 10));
@@ -75,7 +79,7 @@ for (let i = 2; i < process.argv.length; i++) {
   }
 }
 
-const pdfBytes = await Bun.file(pdfPath).arrayBuffer();
+const pdfBytes = await readFile(pdfPath);
 
 const library = await PDFiumLibrary.init();
 const document = await library.loadDocument(new Uint8Array(pdfBytes));
@@ -83,18 +87,21 @@ const pageCount = document.getPageCount();
 
 let currentPage = Math.min(startPage, pageCount - 1);
 
-// Map PDF colors to terminal colors:
-// PDF white (255) → terminal bg, PDF black (0) → terminal fg
-// Linear interpolation: out = fg + (bg - fg) * (in / 255)
-function remapBGRAtoRGBA(bgra: Uint8Array): Uint8Array {
+function bgraToRGBA(bgra: Uint8Array): Uint8Array {
   const rgba = new Uint8Array(bgra.length);
   for (let i = 0; i < bgra.length; i += 4) {
-    const r = bgra[i + 2] / 255; // source R (BGRA layout)
-    const g = bgra[i + 1] / 255;
-    const b = bgra[i + 0] / 255;
-    rgba[i + 0] = Math.round(termFg.r + (termBg.r - termFg.r) * r);
-    rgba[i + 1] = Math.round(termFg.g + (termBg.g - termFg.g) * g);
-    rgba[i + 2] = Math.round(termFg.b + (termBg.b - termFg.b) * b);
+    if (recolor) {
+      const r = bgra[i + 2] / 255;
+      const g = bgra[i + 1] / 255;
+      const b = bgra[i + 0] / 255;
+      rgba[i + 0] = Math.round(termFg.r + (termBg.r - termFg.r) * r);
+      rgba[i + 1] = Math.round(termFg.g + (termBg.g - termFg.g) * g);
+      rgba[i + 2] = Math.round(termFg.b + (termBg.b - termFg.b) * b);
+    } else {
+      rgba[i + 0] = bgra[i + 2];
+      rgba[i + 1] = bgra[i + 1];
+      rgba[i + 2] = bgra[i + 0];
+    }
     rgba[i + 3] = 255;
   }
   return rgba;
@@ -163,7 +170,7 @@ async function renderPage(pageIndex: number) {
   const result = await page.render({ scale: 2, render: "bitmap" });
 
   const cropped = cropBitmap(result.data, result.width, result.height, marginTop, marginBottom, marginLeft, marginRight);
-  const rgba = remapBGRAtoRGBA(cropped.data);
+  const rgba = bgraToRGBA(cropped.data);
   const { cols, rows, padLeft } = fitToTerminal(cropped.width, cropped.height);
 
   // Clear screen, delete old images, home cursor
@@ -233,7 +240,6 @@ process.stdin.on("data", async (data: Buffer) => {
   }
 });
 
-// Render first page
 rendering = true;
 await renderPage(currentPage);
 rendering = false;
