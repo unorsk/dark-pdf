@@ -52,7 +52,7 @@ async function getTerminalColors(): Promise<{ fg: RGB; bg: RGB }> {
 const { fg: termFg, bg: termBg } = await getTerminalColors();
 
 // Parse args: [file] [--page N] [--margin-top N] [--margin-bottom N]
-let pdfPath = "ddia2.pdf";
+let pdfPath: string | undefined;
 let startPage = 0;
 let marginTop = 0;
 let marginBottom = 0;
@@ -77,6 +77,24 @@ for (let i = 2; i < process.argv.length; i++) {
   } else {
     pdfPath = process.argv[i];
   }
+}
+
+if (!pdfPath) {
+  console.error(
+    "Error: no PDF file specified\n\n" +
+    "Usage: bun index.ts <file.pdf> [options]\n\n" +
+    "Options:\n" +
+    "  -p, --page N          Start on page N (default: 1)\n" +
+    "  --margin-top N        Crop N pixels from the top\n" +
+    "  --margin-bottom N     Crop N pixels from the bottom\n" +
+    "  --margin-left N       Crop N pixels from the left\n" +
+    "  --margin-right N      Crop N pixels from the right\n" +
+    "  --no-recolor          Disable terminal color mapping\n\n" +
+    "Navigation:\n" +
+    "  ←/→ arrow keys       Previous/next page\n" +
+    "  q                     Quit"
+  );
+  process.exit(1);
 }
 
 const pdfBytes = await readFile(pdfPath);
